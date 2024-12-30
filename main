@@ -1,0 +1,186 @@
+# enhanced_image_classifier.py
+
+import tensorflow as tf
+from tensorflow.keras import layers, models, optimizers
+import numpy as np
+import os
+import cv2
+from sklearn.model_selection import train_test_split
+from tensorflow.keras.preprocessing.image import ImageDataGenerator
+
+
+class ImageClassifier:
+    def __init__(self, input_shape: tuple = (28, 28, 1), num_classes: int = 10,
+                 learning_rate: float = 0.001, dropout_rate: float = 0.5):
+        """
+        Initialize the CNN Image Classifier
+
+        Args:
+            input_shape (tuple): Shape of input images (height, width, channels)
+            num_classes (int): Number of classification categories
+            learning_rate (float): Learning rate for optimizer
+            dropout_rate (float): Dropout rate for regularization
+        """
+        self.input_shape = input_shape
+        self.num_classes = num_classes
+        self.learning_rate = learning_rate
+        self.dropout_rate = dropout_rate
+        self.model = self._build_model()
+
+    def _build_model(self) -> models.Model:
+        """
+        Build the CNN architecture
+
+        Returns:
+            model: Compiled Keras model
+        """
+        model = models.Sequential([
+            layers.Conv2D(32, (3, 3), activation='relu', input_shape=self.input_shape),
+            layers.BatchNormalization(),
+            layers.MaxPooling2D((2, 2)),
+            layers.Dropout(self.dropout_rate),
+
+            layers.Conv2D(64, (3, 3), activation='relu'),
+            layers.BatchNormalization(),
+            layers.MaxPooling2D((2, 2)),
+            layers.Dropout(self.dropout_rate),
+
+            layers.Conv2D(128, (3, 3), activation='relu'),
+            layers.BatchNormalization(),
+
+            layers.Flatten(),
+            layers.Dense(256, activation='relu'),
+            layers.Dropout(self.dropout_rate),
+            layers.Dense(self.num_classes, activation='softmax')
+        ])
+
+        optimizer = optimizers.Adam(learning_rate=self.learning_rate)
+        model.compile(
+            optimizer=optimizer,
+            loss='categorical_crossentropy',
+            metrics=['accuracy']
+        )
+
+        return model
+
+    def load_and_preprocess_data(self, data_path: str, image_size: tuple = (28, 28)) -> tuple:
+        """
+        Load and preprocess images from directory
+
+        Args:
+            data_path (str): Path to data directory
+            image_size (tuple): Target size for images
+
+        Returns:
+            X (numpy.ndarray): Preprocessed images
+            y (numpy.ndarray): Labels
+        """
+        images, labels = [], []
+
+        for class_idx, class_name in enumerate(os.listdir(data_path)):
+            class_path = os.path.join(data_path, class_name)
+            if os.path.isdir(class_path):
+                for image_name in os.listdir(class_path):
+                    image_path = os.path.join(class_path, image_name)
+                    try:
+                        img = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
+                        img = cv2.resize(img, image_size)
+                        img = img.astype('float32') / 255.0
+                        images.append(img)
+                        labels.append(class_idx)
+                    except Exception as e:
+                        print(f"Error loading image {image_path}: {e}")
+
+        X = np.array(images).reshape(-1, *image_size, 1)
+        y = tf.keras.utils.to_categorical(labels, self.num_classes)
+
+        return X, y
+
+    def train(self, X: np.ndarray, y: np.ndarray, validation_split: float = 0.2,
+              epochs: int = 10, batch_size: int = 32, log_dir: str = './logs') -> tf.keras.callbacks.History:
+        """
+        Train the model
+
+        Args:
+            X (numpy.ndarray): Training images
+            y (numpy.ndarray): Training labels
+            validation_split (float): Fraction of data to use for validation
+            epochs (int): Number of training epochs
+            batch_size (int): Batch size for training
+            log_dir (str): Directory for TensorBoard logs
+
+        Returns:
+            history: Training history
+        """
+        data_gen = ImageDataGenerator(
+            rotation_range=10,
+            width_shift_range=0.1,
+            height_shift_range=0.1,
+            zoom_range=0.1
+        )
+
+        tensorboard_callback = tf.keras.callbacks.TensorBoard(log_dir=log_dir)
+
+        history = self.model.fit(
+            data_gen.flow(X, y, batch_size=batch_size),
+            validation_split=validation_split,
+            epochs=epochs,
+            callbacks=[tensorboard_callback],
+            verbose=1
+        )
+        return history
+
+    def evaluate(self, X_test: np.ndarray, y_test: np.ndarray) -> tuple:
+        """
+        Evaluate the model
+
+        Args:
+            X_test (numpy.ndarray): Test images
+            y_test (numpy.ndarray): Test labels
+
+        Returns:
+            tuple: (loss, accuracy)
+        """
+        return self.model.evaluate(X_test, y_test, verbose=1)
+
+    def predict(self, image: np.ndarray) -> np.ndarray:
+        """
+        Make prediction for a single image
+
+        Args:
+            image (numpy.ndarray): Input image
+
+        Returns:
+            numpy.ndarray: Prediction probabilities
+        """
+        if image.ndim == 2:
+            image = image.reshape(1, *self.input_shape)
+        elif image.ndim == 3:
+            image = np.expand_dims(image, axis=0)
+        return self.model.predict(image)
+
+    def save_model(self, path: str) -> None:
+        """Save the model to disk"""
+        self.model.save(path)
+
+    def load_model(self, path: str) -> None:
+        """Load the model from disk"""
+        self.model = models.load_model(path)
+
+
+# Example usage
+if __name__ == "__main__":
+    classifier = ImageClassifier(input_shape=(28, 28, 1), num_classes=10)
+
+    (X_train, y_train), (X_test, y_test) = tf.keras.datasets.mnist.load_data()
+    X_train = X_train.reshape(-1, 28, 28, 1).astype('float32') / 255.0
+    X_test = X_test.reshape(-1, 28, 28, 1).astype('float32') / 255.0
+    y_train = tf.keras.utils.to_categorical(y_train, 10)
+    y_test = tf.keras.utils.to_categorical(y_test, 10)
+
+    history = classifier.train(X_train, y_train, epochs=10, log_dir='./logs')
+
+    loss, accuracy = classifier.evaluate(X_test, y_test)
+    print(f"Test accuracy: {accuracy * 100:.2f}%")
+
+    classifier.save_model('enhanced_image_classifier_model.h5')
